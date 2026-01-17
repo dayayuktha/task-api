@@ -8,32 +8,49 @@ const app = express();
 app.use(express.json());
 
 // ===== CONFIG =====
-const JWT_SECRET =  process.env.JWT_SECRET ;
+const JWT_SECRET = process.env.JWT_SECRET;
+const MONGO_URI = process.env.MONGO_URI;
+
+if (!JWT_SECRET) {
+  console.error("JWT_SECRET is missing in environment variables");
+  process.exit(1);
+}
+
+if (!MONGO_URI) {
+  console.error("MONGO_URI is missing in environment variables");
+  process.exit(1);
+}
 
 // ===== MongoDB Connection =====
-mongoose.connect(process.env.MONGO_URI)
+mongoose.connect(MONGO_URI)
   .then(() => console.log("MongoDB connected"))
-  .catch(err => console.log(err));
+  .catch(err => {
+    console.error("MongoDB connection error:", err);
+    process.exit(1);
+  });
 
 // ===== Schemas =====
 
-// User Schema
 const userSchema = new mongoose.Schema({
-  name: String,
-  email: String,
-  password: String
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true }
 });
 
 const User = mongoose.model("User", userSchema);
 
-// Task Schema
 const taskSchema = new mongoose.Schema({
-  title: String,
-  completed: Boolean,
-  userId: String
+  title: { type: String, required: true },
+  completed: { type: Boolean, default: false },
+  userId: { type: String, required: true }
 });
 
 const Task = mongoose.model("Task", taskSchema);
+
+// ===== Root Route =====
+app.get("/", (req, res) => {
+  res.send("Backend is running.");
+});
 
 // ===== Auth Middleware =====
 function auth(req, res, next) {
@@ -51,87 +68,104 @@ function auth(req, res, next) {
 
 // ===== Auth Routes =====
 
-// Signup
 app.post("/signup", async (req, res) => {
-  const { name, email, password } = req.body;
+  try {
+    const { name, email, password } = req.body;
 
-  const existingUser = await User.findOne({ email });
-  if (existingUser) return res.status(400).json({ error: "User already exists" });
+    const existingUser = await User.findOne({ email });
+    if (existingUser) return res.status(400).json({ error: "User already exists" });
 
-  const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-  const user = new User({
-    name,
-    email,
-    password: hashedPassword
-  });
+    const user = new User({
+      name,
+      email,
+      password: hashedPassword
+    });
 
-  await user.save();
-  res.json({ message: "User created successfully" });
+    await user.save();
+    res.json({ message: "User created successfully" });
+  } catch {
+    res.status(500).json({ error: "Signup failed" });
+  }
 });
 
-// Login
 app.post("/login", async (req, res) => {
-  const { email, password } = req.body;
+  try {
+    const { email, password } = req.body;
 
-  const user = await User.findOne({ email });
-  if (!user) return res.status(400).json({ error: "User not found" });
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ error: "User not found" });
 
-  const isMatch = await bcrypt.compare(password, user.password);
-  if (!isMatch) return res.status(400).json({ error: "Wrong password" });
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ error: "Wrong password" });
 
-  const token = jwt.sign({ userId: user._id }, JWT_SECRET);
+    const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: "7d" });
 
-  res.json({ token });
+    res.json({ token });
+  } catch {
+    res.status(500).json({ error: "Login failed" });
+  }
 });
 
-// ===== Task Routes (Protected) =====
+// ===== Task Routes =====
 
-// Create Task
 app.post("/tasks", auth, async (req, res) => {
-  const { title } = req.body;
-  if (!title) return res.status(400).json({ error: "Title required" });
+  try {
+    const { title } = req.body;
+    if (!title) return res.status(400).json({ error: "Title required" });
 
-  const newTask = new Task({
-    title,
-    completed: false,
-    userId: req.userId
-  });
+    const newTask = new Task({
+      title,
+      userId: req.userId
+    });
 
-  await newTask.save();
-  res.status(201).json(newTask);
+    await newTask.save();
+    res.status(201).json(newTask);
+  } catch {
+    res.status(500).json({ error: "Could not create task" });
+  }
 });
 
-// Get User's Tasks
 app.get("/tasks", auth, async (req, res) => {
-  const tasks = await Task.find({ userId: req.userId });
-  res.json(tasks);
+  try {
+    const tasks = await Task.find({ userId: req.userId });
+    res.json(tasks);
+  } catch {
+    res.status(500).json({ error: "Could not fetch tasks" });
+  }
 });
 
-// Update Task
 app.put("/tasks/:id", auth, async (req, res) => {
-  const { title, completed } = req.body;
+  try {
+    const { title, completed } = req.body;
 
-  const task = await Task.findOneAndUpdate(
-    { _id: req.params.id, userId: req.userId },
-    { title, completed },
-    { new: true }
-  );
+    const task = await Task.findOneAndUpdate(
+      { _id: req.params.id, userId: req.userId },
+      { title, completed },
+      { new: true }
+    );
 
-  if (!task) return res.status(404).json({ error: "Task not found" });
+    if (!task) return res.status(404).json({ error: "Task not found" });
 
-  res.json(task);
+    res.json(task);
+  } catch {
+    res.status(500).json({ error: "Could not update task" });
+  }
 });
 
-// Delete Task
 app.delete("/tasks/:id", auth, async (req, res) => {
-  const task = await Task.findOneAndDelete(
-    { _id: req.params.id, userId: req.userId }
-  );
+  try {
+    const task = await Task.findOneAndDelete(
+      { _id: req.params.id, userId: req.userId }
+    );
 
-  if (!task) return res.status(404).json({ error: "Task not found" });
+    if (!task) return res.status(404).json({ error: "Task not found" });
 
-  res.json({ message: "Task deleted" });
+    res.json({ message: "Task deleted" });
+  } catch {
+    res.status(500).json({ error: "Could not delete task" });
+  }
 });
 
 // ===== Server =====
